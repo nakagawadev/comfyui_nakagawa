@@ -52,8 +52,40 @@ These nodes work exactly like their native ComfyUI counterparts (`SaveVideo` and
 
 ## Technical Details
 
-- Built using PyAV for video encoding
-- Compatible with ComfyUI's native video API system
-- Uses the same progress reporting mechanism as built-in nodes
-- No additional dependencies required beyond standard ComfyUI installation
+### Video Transmission Protocol
 
+Videos are sent as **binary data** through a custom WebSocket event (type 100) for maximum efficiency:
+
+#### Binary Message Structure
+```
+[Magic Bytes (4)] [Format Length (4)] [Format String (N)] [Video Data]
+```
+
+- **Magic Bytes**: `VIDF` (0x56494446) - Identifies video data format
+- **Format Length**: 32-bit little-endian integer - Length of format string
+- **Format String**: UTF-8 encoded format (e.g., "mp4", "webm")
+- **Video Data**: Raw video binary data
+
+#### Client Implementation
+
+To receive video data on the client side:
+
+```javascript
+// Listen for video data (event type 100)
+ws.onmessage = (e) => {
+  if (e.data instanceof ArrayBuffer) {
+    const view = new DataView(e.data);
+    
+    // Check for "VIDF" magic bytes
+    if (view.getUint32(0) === 0x46444956) {
+      const fmtLen = view.getUint32(4, true);
+      const format = new TextDecoder().decode(new Uint8Array(e.data, 8, fmtLen));
+      const video = e.data.slice(8 + fmtLen);
+      
+      // Create video URL
+      const url = URL.createObjectURL(new Blob([video], {type: `video/${format}`}));
+      document.querySelector('video').src = url;
+    }
+  }
+};
+```
