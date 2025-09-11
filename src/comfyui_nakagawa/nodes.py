@@ -33,24 +33,51 @@ class SaveVideoWebsocket:
     CATEGORY = "api/video"
 
     def save_video(self, video, format, codec):
-        # Create in-memory buffer for video
-        buffer = io.BytesIO()
-        
+        import tempfile
+
         # Get actual format extension
         format_ext = VideoContainer.get_extension(format)
-        
-        # Use video's save_to method exactly like SaveVideo node
-        video.save_to(
-            buffer,
-            format=format,
-            codec=codec
-        )
-        
-        # Send video through websocket
-        video_data = buffer.getvalue()
-        pbar = comfy.utils.ProgressBar(1)
-        pbar.update_absolute(1, 1, (format_ext.upper(), video_data, None))
-        
+
+        # Create a temporary file with the correct extension
+        with tempfile.NamedTemporaryFile(suffix=f".{format_ext}", delete=False) as temp_file:
+            temp_path = temp_file.name
+
+        try:
+            # Save video to temporary file
+            video.save_to(
+                temp_path,
+                format=format,
+                codec=codec
+            )
+
+            # Read the file content
+            with open(temp_path, 'rb') as f:
+                video_data = f.read()
+
+            # Send video as binary data through custom event
+            from server import PromptServer
+            import struct
+
+            # Create header with format info (8 bytes: 4 for magic, 4 for format length)
+            magic = b'VIDF'  # Video Data Format
+            format_bytes = format_ext.encode('utf-8')
+            header = magic + struct.pack('<I', len(format_bytes)) + format_bytes
+
+            # Combine header and video data
+            message = header + video_data
+
+            # Send binary data directly through websocket
+            if PromptServer.instance:
+                # Custom event type for video data (using high number to avoid conflicts)
+                VIDEO_EVENT = 100
+                PromptServer.instance.send_sync(VIDEO_EVENT, message, sid=None)
+
+        finally:
+            # Clean up temporary file
+            import os
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+
         return {}
 
     @classmethod
@@ -63,7 +90,7 @@ class SaveWEBMWebsocket:
     Send WEBM videos through websocket instead of saving to disk.
     Based on SaveWEBM node - converts image sequences to WEBM format.
     """
-    
+
     @classmethod
     def INPUT_TYPES(s):
         return {
@@ -95,14 +122,14 @@ class SaveWEBMWebsocket:
     def save_webm(self, images, codec, fps, crf):
         if images.shape[0] == 0:
             return {}
-        
+
         # Create in-memory buffer for video
         buffer = io.BytesIO()
         container = av.open(buffer, mode="w", format="webm")
-        
+
         # Setup codec mapping
         codec_map = {"vp9": "libvpx-vp9", "av1": "libsvtav1"}
-        
+
         # Create stream
         stream = container.add_stream(codec_map[codec], rate=Fraction(round(fps * 1000), 1000))
         stream.width = images.shape[-2]
@@ -110,35 +137,50 @@ class SaveWEBMWebsocket:
         stream.pix_fmt = "yuv420p10le" if codec == "av1" else "yuv420p"
         stream.bit_rate = 0
         stream.options = {'crf': str(int(crf))}
-        
+
         # AV1 specific settings
         if codec == "av1":
             stream.options["preset"] = "6"
-        
+
         # Progress bar
         pbar = comfy.utils.ProgressBar(images.shape[0])
-        
+
         # Encode frames
         for i, frame in enumerate(images):
             frame_data = torch.clamp(frame[..., :3] * 255, min=0, max=255).to(device=torch.device("cpu"), dtype=torch.uint8).numpy()
             av_frame = av.VideoFrame.from_ndarray(frame_data, format="rgb24")
-            
+
             for packet in stream.encode(av_frame):
                 container.mux(packet)
-            
-            # Update progress
-            pbar.update_absolute(i + 1, images.shape[0], ("WEBM", buffer.getvalue(), None))
-        
+
+            # Update progress (skip sending partial data to avoid errors)
+            pbar.update_absolute(i + 1, images.shape[0])
+
         # Flush encoder
         for packet in stream.encode():
             container.mux(packet)
-        
+
         container.close()
-        
-        # Send final video through websocket
+
+        # Send video as binary data through custom event
         video_data = buffer.getvalue()
-        pbar.update_absolute(images.shape[0], images.shape[0], ("WEBM", video_data, None))
-        
+
+        from server import PromptServer
+        import struct
+
+        # Create header with format info
+        magic = b'VIDF'  # Video Data Format
+        format_bytes = b'webm'
+        header = magic + struct.pack('<I', len(format_bytes)) + format_bytes
+
+        # Combine header and video data
+        message = header + video_data
+
+        # Send binary data directly through websocket
+        if PromptServer.instance:
+            VIDEO_EVENT = 100
+            PromptServer.instance.send_sync(VIDEO_EVENT, message, sid=None)
+
         return {}
 
     @classmethod
