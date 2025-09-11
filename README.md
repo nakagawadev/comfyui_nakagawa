@@ -57,10 +57,14 @@ These nodes work exactly like their native ComfyUI counterparts (`SaveVideo` and
 Videos are sent as **binary data** through a custom WebSocket event (type 100) for maximum efficiency:
 
 #### Binary Message Structure
+
+**Note:** ComfyUI's WebSocket protocol adds a 4-byte message length header before the actual data.
+
 ```
-[Magic Bytes (4)] [Format Length (4)] [Format String (N)] [Video Data]
+[Message Length (4)] [Magic Bytes (4)] [Format Length (4)] [Format String (N)] [Video Data]
 ```
 
+- **Message Length**: 32-bit big-endian integer - Total message size (added by ComfyUI)
 - **Magic Bytes**: `VIDF` (0x56494446) - Identifies video data format
 - **Format Length**: 32-bit little-endian integer - Length of format string
 - **Format String**: UTF-8 encoded format (e.g., "mp4", "webm")
@@ -76,11 +80,11 @@ ws.onmessage = (e) => {
   if (e.data instanceof ArrayBuffer) {
     const view = new DataView(e.data);
     
-    // Check for "VIDF" magic bytes
-    if (view.getUint32(0) === 0x46444956) {
-      const fmtLen = view.getUint32(4, true);
-      const format = new TextDecoder().decode(new Uint8Array(e.data, 8, fmtLen));
-      const video = e.data.slice(8 + fmtLen);
+    // Skip ComfyUI's 4-byte message length header and check for "VIDF" magic bytes
+    if (view.getUint32(4) === 0x46444956) {
+      const fmtLen = view.getUint32(8, true);
+      const format = new TextDecoder().decode(new Uint8Array(e.data, 12, fmtLen));
+      const video = e.data.slice(12 + fmtLen);
       
       // Create video URL
       const url = URL.createObjectURL(new Blob([video], {type: `video/${format}`}));
