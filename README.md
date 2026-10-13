@@ -1,12 +1,12 @@
-# ComfyUI Nakagawa - Video Websocket Nodes
+# ComfyUI Nakagawa
 
-A collection of custom nodes for ComfyUI that send video data through websockets instead of saving to disk.
+A collection of custom nodes for ComfyUI aimed at API usage: send video data through websockets instead of saving to disk, and load images from base64.
 
 ## Installation
 
 1. Clone this repository into your `ComfyUI/custom_nodes` directory
 2. Restart ComfyUI
-3. The nodes will appear in the `api/video` category
+3. The nodes will appear in the `api/video` and `api/image` categories
 
 ## Nodes
 
@@ -24,6 +24,7 @@ Sends video data through websocket instead of saving to disk. Compatible with Co
 - Supports all formats and codecs available in your ComfyUI installation
 - Streams video data through websocket with proper headers
 - Progress tracking during processing
+- Video preview in the node when the workflow runs from the ComfyUI UI (see [UI preview](#ui-preview))
 
 ### Save WEBM Websocket
 
@@ -40,15 +41,38 @@ Converts image sequences to WEBM format and sends through websocket. Compatible 
 - Optimized for web streaming
 - Real-time progress updates
 - AV1 preset optimization for faster encoding
+- Video preview in the node when the workflow runs from the ComfyUI UI (see [UI preview](#ui-preview))
+
+### Load Image (Base64)
+
+Loads an image from a base64 string, so API clients can send images inline instead of uploading files. Node ID: `LoadImageBase64Nak`.
+
+**Inputs:**
+- `data` (STRING) - The image as base64, raw (`iVBORw0KGgo...`) or as a data URI (`data:image/png;base64,...`)
+
+**Outputs:**
+- `IMAGE` - The decoded image (RGB)
+- `MASK` - The alpha channel, or all ones when the image has no alpha
+
+**Features:**
+- Live preview of the image below the textarea, client-side only (nothing is uploaded or saved)
+- `load image as base64` button to pick an image file and fill the textarea with it
+- Preview and button are not serialized, so an API export only contains `data`
 
 ## Usage
 
-These nodes work exactly like their native ComfyUI counterparts (`SaveVideo` and `SaveWEBM`) but instead of saving files to disk, they send the video data through ComfyUI's websocket connection. This is useful for:
+The video nodes work exactly like their native ComfyUI counterparts (`SaveVideo` and `SaveWEBM`) but instead of saving files to disk, they send the video data through ComfyUI's websocket connection. This is useful for:
 
 - Real-time video streaming applications
 - Web-based ComfyUI integrations
 - Custom clients that need direct video data access
 - Reducing disk I/O in automated workflows
+
+### UI preview
+
+When a workflow runs from the ComfyUI UI, both video nodes also write the video to ComfyUI's `temp` directory (wiped on startup) and return it as a UI output, so the video plays inside the node. The websocket message is sent either way.
+
+UI runs are detected through the `extra_pnginfo` hidden input: the ComfyUI frontend sends the workflow there, API clients usually don't. When it is missing (API runs), nothing is kept on disk and the node returns no UI output. An API client that does send `extra_pnginfo` with a `workflow` is treated as a UI run.
 
 ## Technical Details
 

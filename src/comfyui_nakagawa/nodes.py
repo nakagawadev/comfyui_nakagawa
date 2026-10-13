@@ -21,6 +21,11 @@ def _temp_video_path(ext):
     return filename, os.path.join(temp_dir, filename)
 
 
+def _from_ui(extra_pnginfo):
+    """The ComfyUI frontend sends the workflow in extra_pnginfo; API clients usually don't."""
+    return bool(extra_pnginfo and "workflow" in extra_pnginfo)
+
+
 def _ui_preview(filename):
     return {"ui": {"images": [{"filename": filename, "subfolder": "", "type": "temp"}], "animated": (True,)}}
 
@@ -41,7 +46,8 @@ class SaveVideoWebsocket:
                 "video": ("VIDEO", {"tooltip": "The video to send through websocket"}),
                 "format": (VideoContainer.as_input(), {"default": "auto", "tooltip": "The format to save the video as"}),
                 "codec": (VideoCodec.as_input(), {"default": "auto", "tooltip": "The codec to use for the video"})
-            }
+            },
+            "hidden": {"extra_pnginfo": "EXTRA_PNGINFO"}
         }
 
     RETURN_TYPES = ()
@@ -49,11 +55,11 @@ class SaveVideoWebsocket:
     OUTPUT_NODE = True
     CATEGORY = "api/video"
 
-    def save_video(self, video, format, codec):
+    def save_video(self, video, format, codec, extra_pnginfo=None):
         # Get actual format extension
         format_ext = VideoContainer.get_extension(format)
 
-        # Save to ComfyUI's temp dir; the file is kept so the UI can preview it
+        # Save to ComfyUI's temp dir; kept only on UI runs so the node can preview it
         filename, temp_path = _temp_video_path(format_ext)
         video.save_to(
             temp_path,
@@ -82,10 +88,13 @@ class SaveVideoWebsocket:
             VIDEO_EVENT = 100
             PromptServer.instance.send_sync(VIDEO_EVENT, message, sid=None)
 
+        if not _from_ui(extra_pnginfo):
+            os.remove(temp_path)
+            return {}
         return _ui_preview(filename)
 
     @classmethod
-    def IS_CHANGED(s, video, format, codec):
+    def IS_CHANGED(s, **kwargs):
         return time.time()
 
 
@@ -115,7 +124,8 @@ class SaveWEBMWebsocket:
                     "step": 1,
                     "tooltip": "Higher crf means lower quality with smaller file size"
                 })
-            }
+            },
+            "hidden": {"extra_pnginfo": "EXTRA_PNGINFO"}
         }
 
     RETURN_TYPES = ()
@@ -123,7 +133,7 @@ class SaveWEBMWebsocket:
     OUTPUT_NODE = True
     CATEGORY = "api/video"
 
-    def save_webm(self, images, codec, fps, crf):
+    def save_webm(self, images, codec, fps, crf, extra_pnginfo=None):
         if images.shape[0] == 0:
             return {}
 
@@ -185,6 +195,9 @@ class SaveWEBMWebsocket:
             VIDEO_EVENT = 100
             PromptServer.instance.send_sync(VIDEO_EVENT, message, sid=None)
 
+        if not _from_ui(extra_pnginfo):
+            return {}
+
         # Write a copy to ComfyUI's temp dir so the UI can preview it
         filename, temp_path = _temp_video_path("webm")
         with open(temp_path, "wb") as f:
@@ -193,7 +206,7 @@ class SaveWEBMWebsocket:
         return _ui_preview(filename)
 
     @classmethod
-    def IS_CHANGED(s, images, codec, fps, crf):
+    def IS_CHANGED(s, **kwargs):
         return time.time()
 
 
@@ -225,7 +238,7 @@ class LoadImageBase64:
         rgb = img.convert("RGB")
         image = torch.from_numpy(np.array(rgb).astype(np.float32) / 255.0)[None,]
 
-        # Same semantics as LoadImageFromBase64: mask = alpha, ones when there is no alpha
+        # mask = alpha, ones when there is no alpha
         if "A" in img.getbands():
             mask = torch.from_numpy(np.array(img.getchannel("A")).astype(np.float32) / 255.0)
         else:
