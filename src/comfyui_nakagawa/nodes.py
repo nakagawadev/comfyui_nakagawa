@@ -1,11 +1,28 @@
 import io
+import base64
 import av
 import torch
 import numpy as np
 import comfy.utils
 import time
+import os
+import uuid
+import folder_paths
 from fractions import Fraction
+from PIL import Image, ImageOps
 from comfy_api.util import VideoCodec, VideoContainer
+
+
+def _temp_video_path(ext):
+    """Path in ComfyUI's temp dir (wiped on startup) so the UI can preview it."""
+    temp_dir = folder_paths.get_temp_directory()
+    os.makedirs(temp_dir, exist_ok=True)
+    filename = f"ws_preview_{uuid.uuid4().hex}.{ext}"
+    return filename, os.path.join(temp_dir, filename)
+
+
+def _ui_preview(filename):
+    return {"ui": {"images": [{"filename": filename, "subfolder": "", "type": "temp"}], "animated": (True,)}}
 
 
 class SaveVideoWebsocket:
@@ -33,52 +50,39 @@ class SaveVideoWebsocket:
     CATEGORY = "api/video"
 
     def save_video(self, video, format, codec):
-        import tempfile
-
         # Get actual format extension
         format_ext = VideoContainer.get_extension(format)
 
-        # Create a temporary file with the correct extension
-        with tempfile.NamedTemporaryFile(suffix=f".{format_ext}", delete=False) as temp_file:
-            temp_path = temp_file.name
+        # Save to ComfyUI's temp dir; the file is kept so the UI can preview it
+        filename, temp_path = _temp_video_path(format_ext)
+        video.save_to(
+            temp_path,
+            format=format,
+            codec=codec
+        )
 
-        try:
-            # Save video to temporary file
-            video.save_to(
-                temp_path,
-                format=format,
-                codec=codec
-            )
+        with open(temp_path, 'rb') as f:
+            video_data = f.read()
 
-            # Read the file content
-            with open(temp_path, 'rb') as f:
-                video_data = f.read()
+        # Send video as binary data through custom event
+        from server import PromptServer
+        import struct
 
-            # Send video as binary data through custom event
-            from server import PromptServer
-            import struct
+        # Create header with format info (8 bytes: 4 for magic, 4 for format length)
+        magic = b'VIDF'  # Video Data Format
+        format_bytes = format_ext.encode('utf-8')
+        header = magic + struct.pack('<I', len(format_bytes)) + format_bytes
 
-            # Create header with format info (8 bytes: 4 for magic, 4 for format length)
-            magic = b'VIDF'  # Video Data Format
-            format_bytes = format_ext.encode('utf-8')
-            header = magic + struct.pack('<I', len(format_bytes)) + format_bytes
+        # Combine header and video data
+        message = header + video_data
 
-            # Combine header and video data
-            message = header + video_data
+        # Send binary data directly through websocket
+        if PromptServer.instance:
+            # Custom event type for video data (using high number to avoid conflicts)
+            VIDEO_EVENT = 100
+            PromptServer.instance.send_sync(VIDEO_EVENT, message, sid=None)
 
-            # Send binary data directly through websocket
-            if PromptServer.instance:
-                # Custom event type for video data (using high number to avoid conflicts)
-                VIDEO_EVENT = 100
-                PromptServer.instance.send_sync(VIDEO_EVENT, message, sid=None)
-
-        finally:
-            # Clean up temporary file
-            import os
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-
-        return {}
+        return _ui_preview(filename)
 
     @classmethod
     def IS_CHANGED(s, video, format, codec):
@@ -181,22 +185,66 @@ class SaveWEBMWebsocket:
             VIDEO_EVENT = 100
             PromptServer.instance.send_sync(VIDEO_EVENT, message, sid=None)
 
-        return {}
+        # Write a copy to ComfyUI's temp dir so the UI can preview it
+        filename, temp_path = _temp_video_path("webm")
+        with open(temp_path, "wb") as f:
+            f.write(video_data)
+
+        return _ui_preview(filename)
 
     @classmethod
     def IS_CHANGED(s, images, codec, fps, crf):
         return time.time()
 
 
+class LoadImageBase64:
+    """
+    Load an image from a base64 string (raw or data URI).
+
+    The UI preview is rendered client-side from the textarea
+    (web/load_image_base64.js), nothing is sent or written to disk.
+    """
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "data": ("STRING", {"default": "", "multiline": True, "tooltip": "Base64 image, raw or as a data:image/...;base64, URI"}),
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE", "MASK")
+    FUNCTION = "load_image"
+    CATEGORY = "api/image"
+
+    def load_image(self, data):
+        # Accept data URIs too: strip everything up to the comma
+        img = Image.open(io.BytesIO(base64.b64decode(data.split(",", 1)[-1])))
+        img = ImageOps.exif_transpose(img)
+
+        rgb = img.convert("RGB")
+        image = torch.from_numpy(np.array(rgb).astype(np.float32) / 255.0)[None,]
+
+        # Same semantics as LoadImageFromBase64: mask = alpha, ones when there is no alpha
+        if "A" in img.getbands():
+            mask = torch.from_numpy(np.array(img.getchannel("A")).astype(np.float32) / 255.0)
+        else:
+            mask = torch.ones((rgb.height, rgb.width), dtype=torch.float32)
+
+        return image, mask.unsqueeze(0)
+
+
 # A dictionary that contains all nodes you want to export with their names
 # NOTE: names should be globally unique
 NODE_CLASS_MAPPINGS = {
     "SaveVideoWebsocket": SaveVideoWebsocket,
-    "SaveWEBMWebsocket": SaveWEBMWebsocket
+    "SaveWEBMWebsocket": SaveWEBMWebsocket,
+    "LoadImageBase64Nak": LoadImageBase64
 }
 
 # A dictionary that contains the friendly/humanly readable titles for the nodes
 NODE_DISPLAY_NAME_MAPPINGS = {
     "SaveVideoWebsocket": "Save Video Websocket",
-    "SaveWEBMWebsocket": "Save WEBM Websocket"
+    "SaveWEBMWebsocket": "Save WEBM Websocket",
+    "LoadImageBase64Nak": "Load Image (Base64)"
 }
