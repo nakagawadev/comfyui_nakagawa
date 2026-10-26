@@ -21,6 +21,20 @@ def test_resolve_config_drain():
     assert stats.resolve_config({}, 8188)["drain"] is False
 
 
+def test_drain_access():
+    d = drain.Drain(FakeConfig({"drain": True}), FakeQueue())
+    assert d.allowed("127.0.0.1", "127.0.0.1:8188")
+    assert d.allowed("::1", "[::1]:8188") and d.allowed("127.0.0.1", "localhost")
+    assert not d.allowed("100.64.0.7", "127.0.0.1:8188")  # remote caller
+    assert not d.allowed("127.0.0.1", "evil.example:8188")  # DNS rebinding / proxy with a public Host
+    assert not d.allowed("127.0.0.1", "127.0.0.1.evil.example")
+    assert not d.allowed("127.0.0.1", "")
+    d.config.cfg["drain_remote"] = True
+    assert d.allowed("100.64.0.7", "comfy-host:8188")
+    d.config.cfg["drain"] = False
+    assert not d.allowed("127.0.0.1", "127.0.0.1:8188")  # off is off
+
+
 def test_drain_state_follows_config():
     cfg = FakeConfig({"drain": True})
     d = drain.Drain(cfg, FakeQueue())

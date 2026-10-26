@@ -86,7 +86,7 @@ class SaveVideoWebsocket:
         if PromptServer.instance:
             # Custom event type for video data (using high number to avoid conflicts)
             VIDEO_EVENT = 100
-            PromptServer.instance.send_sync(VIDEO_EVENT, message, sid=None)
+            PromptServer.instance.send_sync(VIDEO_EVENT, message, sid=PromptServer.instance.client_id)
 
         if not _from_ui(extra_pnginfo):
             os.remove(temp_path)
@@ -193,7 +193,7 @@ class SaveWEBMWebsocket:
         # Send binary data directly through websocket
         if PromptServer.instance:
             VIDEO_EVENT = 100
-            PromptServer.instance.send_sync(VIDEO_EVENT, message, sid=None)
+            PromptServer.instance.send_sync(VIDEO_EVENT, message, sid=PromptServer.instance.client_id)
 
         if not _from_ui(extra_pnginfo):
             return {}

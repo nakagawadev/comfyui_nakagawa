@@ -22,7 +22,7 @@ Sends video data through websocket instead of saving to disk. Compatible with Co
 **Features:**
 - Uses ComfyUI's native video handling system
 - Supports all formats and codecs available in your ComfyUI installation
-- Streams video data through websocket with proper headers
+- Streams video data through websocket with proper headers, to the client that queued the prompt (its `client_id`), or to every connected client when the prompt has none — the same as ComfyUI's `SaveImageWebsocket`
 - Progress tracking during processing
 - Video preview in the node when the workflow runs from the ComfyUI UI (see [UI preview](#ui-preview))
 
@@ -92,12 +92,15 @@ Saved graphs are in API format, so they can be posted back to `/prompt` to repro
 
 All return 404 while stats are disabled. Each event has the `prompt_id` that `/prompt` returns; send `"extra_data": {"trace_id": "..."}` with `/prompt` to also record your own ID.
 
+These routes have no authentication of their own, like the rest of ComfyUI: they show about what `/history` already shows (prompts, errors and tracebacks), but saved events and graphs outlive a restart. Only enable stats on an instance that is already protected (not exposed publicly, or behind auth). `/nkg/metrics` stays reachable from other hosts on purpose, so Prometheus can scrape it.
+
 ### Drain mode
 
 Lets an instance finish its queue without taking new prompts, so it can be restarted without losing queued work (the ComfyUI queue lives in memory). Off by default.
 
 ```yaml
 drain: true                 # in comfyui_nakagawa.yaml, global
+drain_remote: false         # true lets other hosts call /nkg/drain
 instances:
   "8190": { drain: false }  # or per instance
 ```
@@ -108,9 +111,9 @@ instances:
 | `POST /nkg/drain` | Start draining: `POST /prompt` answers 503 with `Retry-After` |
 | `DELETE /nkg/drain` | Stop draining |
 
-The endpoints answer only loopback callers (`127.0.0.1`, `::1`) and return 404 while drain is off. Draining state lives in memory: a restart always comes back accepting prompts. Turning `drain` off in the file stops draining at once.
+The endpoints answer only callers on the same machine (`127.0.0.1`, `::1`) that also send a loopback `Host` (`127.0.0.1`, `localhost`, `[::1]`); anything else gets 404, as when drain is off. The `Host` check stops a browser doing DNS rebinding and a reverse proxy that forwards the public host name. Set `drain_remote: true` (global or per instance) only if something on another host must drive drain. Draining state lives in memory: a restart always comes back accepting prompts. Turning `drain` off in the file stops draining at once.
 
-The plugin adds no authentication: it assumes the ComfyUI instance is already properly protected (not exposed publicly). A reverse proxy on the same host makes remote requests look local, so don't expose these routes through one.
+The plugin adds no authentication: it assumes the ComfyUI instance is already properly protected (not exposed publicly). A reverse proxy on the same host that rewrites `Host` to `localhost` makes remote requests look local, so don't expose these routes through one.
 
 ### Metrics
 

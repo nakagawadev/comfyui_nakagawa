@@ -1,13 +1,22 @@
 """Drain mode: stop taking new prompts so the queue empties before a restart.
 
 Off unless `drain: true` in comfyui_nakagawa.yaml (global or per instance).
-The endpoints only answer loopback callers. State lives in memory, so a restart
-always comes back accepting prompts.
+The endpoints only answer loopback callers that also ask for a loopback Host (so a browser
+doing DNS rebinding or a proxy forwarding a public Host can't reach them), unless
+`drain_remote: true`. State lives in memory, so a restart always comes back accepting prompts.
 """
 import time
 
 LOOPBACK = ("127.0.0.1", "::1")
+LOCAL_HOSTS = ("127.0.0.1", "localhost", "[::1]")
 RETRY_AFTER = "30"
+
+
+def local_host(host):
+    """True for a Host header naming loopback, with or without a port."""
+    host = (host or "").lower()
+    name = host[:host.find("]") + 1] if host.startswith("[") else host.split(":")[0]
+    return name in LOCAL_HOSTS
 
 
 class Drain:
@@ -17,6 +26,12 @@ class Drain:
 
     def enabled(self):
         return bool(self.config.get().get("drain"))
+
+    def remote_ok(self):
+        return bool(self.config.get().get("drain_remote"))
+
+    def allowed(self, remote, host):
+        return self.enabled() and (self.remote_ok() or (remote in LOOPBACK and local_host(host)))
 
     def active(self):
         return self.since is not None and self.enabled()
@@ -45,10 +60,8 @@ def install(server, config):
     server.app.middlewares.append(reject_prompts)
 
     def guard(request):
-        if not drain.enabled():
-            raise web.HTTPNotFound()
-        if request.remote not in LOOPBACK:
-            raise web.HTTPForbidden(text="drain endpoints only answer loopback callers")
+        if not drain.allowed(request.remote, request.host):
+            raise web.HTTPNotFound()  # don't reveal the endpoint
 
     @server.routes.get("/nkg/drain")
     async def drain_status(request):

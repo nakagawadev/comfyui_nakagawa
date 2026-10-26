@@ -113,3 +113,17 @@ def test_metrics_render():
     assert "comfyui_prompt_duration_seconds_sum 7.5" in out
     assert "process_resident_memory_bytes 12345678901" in out
     assert out.count("# TYPE comfyui_loaded_model_bytes gauge") == 1
+
+
+def test_store_graph_needs_uuid_and_find_is_exact(tmp_path):
+    cfg = {**stats.DEFAULTS, "dir": str(tmp_path)}
+    store = stats.Store()
+    now = int(time.time())
+    victim = "00000000-0000-4000-8000-0000000000aa"
+    store.write(cfg, 7855, {"prompt_id": "../../evil", "ts": now, "status": "rejected"}, graph={"1": {}})
+    store.write(cfg, 7855, {"prompt_id": "00000000-0000-4000-8000-0000000000bb", "trace_id": victim, "ts": now, "status": "error"})
+    store.write(cfg, 7855, {"prompt_id": victim, "ts": now + 1, "status": "success"})
+    assert not list(tmp_path.rglob("evil*")), "a non-UUID prompt_id must not become a file"
+    assert store.query(cfg, 7855, status="rejected")[0].get("graph") is None
+    _, found = store.find(cfg, 7855, victim)
+    assert found["status"] == "success"

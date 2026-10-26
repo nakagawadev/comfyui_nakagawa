@@ -53,7 +53,8 @@ def find_config(extra_model_paths_config, base_path):
 def resolve_config(raw, port):
     """Global `stats` (and top-level `drain`) merged with `instances[port]`; the instance wins."""
     raw = raw or {}
-    cfg = {**DEFAULTS, **(raw.get("stats") or {}), "drain": bool(raw.get("drain", False))}
+    cfg = {**DEFAULTS, **(raw.get("stats") or {}),
+           "drain": bool(raw.get("drain", False)), "drain_remote": bool(raw.get("drain_remote", False))}
     cfg.update((raw.get("instances") or {}).get(str(port)) or {})
     if cfg["save_graph"] is False:  # YAML 1.1 reads a bare `off` as false
         cfg["save_graph"] = "off"
@@ -190,7 +191,7 @@ class Store:
         today = date.today().isoformat()
         day_dir = os.path.join(inst_dir, today)
         with self.lock:
-            if graph is not None:
+            if graph is not None and UUID_RE.fullmatch(str(event["prompt_id"])):  # the id becomes a file name
                 os.makedirs(os.path.join(day_dir, "graphs"), exist_ok=True)
                 with open(os.path.join(day_dir, "graphs", event["prompt_id"] + ".json"), "w", encoding="utf-8") as f:
                     json.dump(truncate(graph), f)
@@ -242,9 +243,15 @@ class Store:
             try:
                 with open(os.path.join(inst_dir, day, "events.jsonl"), encoding="utf-8") as f:
                     for line in f:
-                        if prompt_id in line:
-                            return day, json.loads(line)
-            except (OSError, ValueError):
+                        if prompt_id not in line:  # cheap pre-filter; the field decides
+                            continue
+                        try:
+                            event = json.loads(line)
+                        except ValueError:
+                            continue
+                        if event.get("prompt_id") == prompt_id:
+                            return day, event
+            except OSError:
                 continue
         return None, None
 
@@ -381,7 +388,6 @@ class Collector:
             "ts": end / 1000,
             "prompt_id": prompt_id,
             "trace_id": extra_data.get("trace_id"),
-            "client_id": extra_data.get("client_id"),
             "port": self.port,
             "comfyui_version": self.version,
             "status": result,
