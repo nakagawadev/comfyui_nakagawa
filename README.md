@@ -92,9 +92,29 @@ Saved graphs are in API format, so they can be posted back to `/prompt` to repro
 
 All return 404 while stats are disabled. Each event has the `prompt_id` that `/prompt` returns; send `"extra_data": {"trace_id": "..."}` with `/prompt` to also record your own ID.
 
+### Drain mode
+
+Lets an instance finish its queue without taking new prompts, so it can be restarted without losing queued work (the ComfyUI queue lives in memory). Off by default.
+
+```yaml
+drain: true                 # in comfyui_nakagawa.yaml, global
+instances:
+  "8190": { drain: false }  # or per instance
+```
+
+| Endpoint | Does |
+|---|---|
+| `GET /nkg/drain` | `{"draining": bool, "since": ts, "running": n, "pending": n}` |
+| `POST /nkg/drain` | Start draining: `POST /prompt` answers 503 with `Retry-After` |
+| `DELETE /nkg/drain` | Stop draining |
+
+The endpoints answer only loopback callers (`127.0.0.1`, `::1`) and return 404 while drain is off. Draining state lives in memory: a restart always comes back accepting prompts. Turning `drain` off in the file stops draining at once.
+
+The plugin adds no authentication: it assumes the ComfyUI instance is already properly protected (not exposed publicly). A reverse proxy on the same host makes remote requests look local, so don't expose these routes through one.
+
 ### Metrics
 
-`comfyui_prompts_total{status}` (success, error, interrupted, rejected), `comfyui_prompt_errors_total{exception}`, `comfyui_images_total` (from `batch_size`), `comfyui_prompt_duration_seconds`, `comfyui_queue_wait_seconds`, `comfyui_queue_pending`, `comfyui_model_uses_total{type,name}` (checkpoint, unet, vae, clip), `comfyui_model_loads_total{class}`, `comfyui_loaded_model_bytes{class}`, `comfyui_torch_vram_allocated_bytes`, `comfyui_torch_vram_reserved_bytes`, `comfyui_build_info{version}`, `process_resident_memory_bytes`, `process_start_time_seconds`.
+`comfyui_prompts_total{status}` (success, error, interrupted, rejected), `comfyui_prompt_errors_total{exception}`, `comfyui_images_total` (from `batch_size`), `comfyui_prompt_duration_seconds`, `comfyui_queue_wait_seconds`, `comfyui_queue_pending`, `comfyui_model_uses_total{type,name}` (checkpoint, unet, vae, clip), `comfyui_model_loads_total{class}`, `comfyui_loaded_model_bytes{class}`, `comfyui_torch_vram_allocated_bytes`, `comfyui_torch_vram_reserved_bytes`, `comfyui_build_info{version}`, `comfyui_draining`, `process_resident_memory_bytes`, `process_start_time_seconds`.
 
 Per-generation details (LoRAs and strengths, every model file in the graph, sampling params, slowest nodes, memory before and after, models loaded or evicted, error and traceback) go to the JSONL only, to keep metric cardinality low.
 

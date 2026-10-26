@@ -51,9 +51,9 @@ def find_config(extra_model_paths_config, base_path):
 
 
 def resolve_config(raw, port):
-    """Global `stats` merged with `instances[port]`; the instance wins."""
+    """Global `stats` (and top-level `drain`) merged with `instances[port]`; the instance wins."""
     raw = raw or {}
-    cfg = {**DEFAULTS, **(raw.get("stats") or {})}
+    cfg = {**DEFAULTS, **(raw.get("stats") or {}), "drain": bool(raw.get("drain", False))}
     cfg.update((raw.get("instances") or {}).get(str(port)) or {})
     if cfg["save_graph"] is False:  # YAML 1.1 reads a bare `off` as false
         cfg["save_graph"] = "off"
@@ -490,6 +490,9 @@ def install():
     queue = server.prompt_queue
     log.info("stats: config %s (%s)", path, "found" if os.path.isfile(path) else "missing, stats disabled")
 
+    from . import drain as drain_mode
+    drain = drain_mode.install(server, config)
+
     def enabled():
         cfg = config.get()
         return cfg if cfg.get("enabled") else None
@@ -554,7 +557,8 @@ def install():
     async def metrics(request):
         if not enabled():
             raise web.HTTPNotFound()
-        return web.Response(text=collector.metrics.render(collector.gauges(queue)),
+        gauges = collector.gauges(queue) + [("comfyui_draining", (), int(drain.active()))]
+        return web.Response(text=collector.metrics.render(gauges),
                             content_type="text/plain", charset="utf-8")
 
     @server.routes.get("/nkg/stats/events")
