@@ -22,7 +22,7 @@ Sends video data through websocket instead of saving to disk. Compatible with Co
 **Features:**
 - Uses ComfyUI's native video handling system
 - Supports all formats and codecs available in your ComfyUI installation
-- Streams video data through websocket with proper headers
+- Streams video data through websocket with proper headers, to the client that queued the prompt (its `client_id`), or to every connected client when the prompt has none — the same as ComfyUI's `SaveImageWebsocket`
 - Progress tracking during processing
 - Video preview in the node when the workflow runs from the ComfyUI UI (see [UI preview](#ui-preview))
 
@@ -58,6 +58,79 @@ Loads an image from a base64 string, so API clients can send images inline inste
 - Live preview of the image below the textarea, client-side only (nothing is uploaded or saved)
 - `load image as base64` button to pick an image file and fill the textarea with it
 - Preview and button are not serialized, so an API export only contains `data`
+
+## Generation stats
+
+Optional Prometheus metrics and a per-generation JSONL log, meant for debugging (memory, model usage, failures). Off unless a config file exists.
+
+### Config
+
+ComfyUI looks for `comfyui_nakagawa.yaml` next to each `--extra-model-paths-config` file, then in the ComfyUI root. Instances that share an `extra_model_paths.yaml` share this file, so one file per server controls every instance. Changes apply without a restart.
+
+```yaml
+stats:                      # applies to every instance
+  enabled: true
+  dir: ~/comfy_stats        # {dir}/{port}/{YYYY-MM-DD}/events.jsonl and graphs/{prompt_id}.json
+  retention_days: 14        # day folders older than this are deleted
+  max_mb: 500               # cap per instance; oldest days go first, today is kept
+  save_graph: errors        # off | errors | all
+instances:                  # per-port overrides of any `stats` key
+  "8189": { save_graph: all }
+  "8190": { enabled: false }
+```
+
+Saved graphs are in API format, so they can be posted back to `/prompt` to reproduce a failure. Strings over 1 KB (e.g. base64 images) are replaced by their size and hash. Prompt text is only stored inside saved graphs.
+
+### Endpoints
+
+| Endpoint | Returns |
+|---|---|
+| `GET /nkg/metrics` | Prometheus metrics |
+| `GET /nkg/stats/events?status=error&since=2026-01-01T10:00&until=...&limit=50` | Events, newest first |
+| `GET /nkg/stats/events/{prompt_id}` | One event |
+| `GET /nkg/stats/events/{prompt_id}/graph` | Its saved graph |
+
+All return 404 while stats are disabled. Each event has the `prompt_id` that `/prompt` returns; send `"extra_data": {"trace_id": "..."}` with `/prompt` to also record your own ID.
+
+These routes have no authentication of their own, like the rest of ComfyUI: they show about what `/history` already shows (prompts, errors and tracebacks), but saved events and graphs outlive a restart. Only enable stats on an instance that is already protected (not exposed publicly, or behind auth). `/nkg/metrics` stays reachable from other hosts on purpose, so Prometheus can scrape it.
+
+### Drain mode
+
+Lets an instance finish its queue without taking new prompts, so it can be restarted without losing queued work (the ComfyUI queue lives in memory). Off by default.
+
+```yaml
+drain: true                 # in comfyui_nakagawa.yaml, global
+drain_remote: false         # true lets other hosts call /nkg/drain
+instances:
+  "8190": { drain: false }  # or per instance
+```
+
+| Endpoint | Does |
+|---|---|
+| `GET /nkg/drain` | `{"draining": bool, "since": ts, "running": n, "pending": n}` |
+| `POST /nkg/drain` | Start draining: `POST /prompt` answers 503 with `Retry-After` |
+| `DELETE /nkg/drain` | Stop draining |
+
+The endpoints answer only callers on the same machine (`127.0.0.1`, `::1`) that also send a loopback `Host` (`127.0.0.1`, `localhost`, `[::1]`); anything else gets 404, as when drain is off. The `Host` check stops a browser doing DNS rebinding and a reverse proxy that forwards the public host name. Set `drain_remote: true` (global or per instance) only if something on another host must drive drain. Draining state lives in memory: a restart always comes back accepting prompts. Turning `drain` off in the file stops draining at once.
+
+The plugin adds no authentication: it assumes the ComfyUI instance is already properly protected (not exposed publicly). A reverse proxy on the same host that rewrites `Host` to `localhost` makes remote requests look local, so don't expose these routes through one.
+
+### Metrics
+
+`comfyui_prompts_total{status}` (success, error, interrupted, rejected), `comfyui_prompt_errors_total{exception}`, `comfyui_images_total` (from `batch_size`), `comfyui_prompt_duration_seconds`, `comfyui_queue_wait_seconds`, `comfyui_queue_pending`, `comfyui_model_uses_total{type,name}` (checkpoint, unet, vae, clip), `comfyui_model_loads_total{class}`, `comfyui_loaded_model_bytes{class}`, `comfyui_torch_vram_allocated_bytes`, `comfyui_torch_vram_reserved_bytes`, `comfyui_build_info{version}`, `comfyui_draining`, `process_resident_memory_bytes`, `process_start_time_seconds`.
+
+Per-generation details (LoRAs and strengths, every model file in the graph, sampling params, slowest nodes, memory before and after, models loaded or evicted, error and traceback) go to the JSONL only, to keep metric cardinality low.
+
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: comfyui
+    static_configs:
+      - targets: ["comfy-host:8188", "comfy-host:8189"]
+    metrics_path: /nkg/metrics
+```
+
+Host RAM and full-GPU usage are out of scope here: run [node_exporter](https://github.com/prometheus/node_exporter) and an NVIDIA exporter such as [nvidia_gpu_exporter](https://github.com/utkuozdemir/nvidia_gpu_exporter) next to ComfyUI for those.
 
 ## Usage
 

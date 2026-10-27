@@ -14,3 +14,12 @@ from .src.comfyui_nakagawa.nodes import NODE_CLASS_MAPPINGS
 from .src.comfyui_nakagawa.nodes import NODE_DISPLAY_NAME_MAPPINGS
 
 WEB_DIRECTORY = "./web"
+
+try:
+    from .src.comfyui_nakagawa import stats
+
+    stats.install()
+except Exception:
+    import logging
+
+    logging.getLogger("comfyui_nakagawa.stats").warning("stats: install failed, ComfyUI continues without stats", exc_info=True)
