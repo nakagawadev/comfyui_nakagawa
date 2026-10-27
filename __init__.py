@@ -8,7 +8,7 @@ __all__ = [
 
 __author__ = """nakagawadev"""
 __email__ = "hi@nakagawa.dev"
-__version__ = "0.0.1"
+__version__ = "0.1.0"
 
 from .src.comfyui_nakagawa.nodes import NODE_CLASS_MAPPINGS
 from .src.comfyui_nakagawa.nodes import NODE_DISPLAY_NAME_MAPPINGS
