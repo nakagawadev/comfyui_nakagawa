@@ -127,3 +127,12 @@ def test_store_graph_needs_uuid_and_find_is_exact(tmp_path):
     assert store.query(cfg, 7855, status="rejected")[0].get("graph") is None
     _, found = store.find(cfg, 7855, victim)
     assert found["status"] == "success"
+
+
+def test_failed_nodes(tmp_path):
+    for d in ("ok_node", "broken_node", "old.disabled", "__pycache__"):
+        (tmp_path / d).mkdir()
+    for f in ("single.py", "broken_single.py", "notes.txt", "x.py.example"):
+        (tmp_path / f).write_text("")
+    loaded = {"ok_node": "/x", str(tmp_path / "single"): "/y"}
+    assert stats.failed_nodes([str(tmp_path), str(tmp_path / "missing")], loaded) == ["broken_node", "broken_single"]

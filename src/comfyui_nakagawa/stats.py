@@ -6,6 +6,7 @@ then in the ComfyUI root. No file means stats are off.
 import hashlib
 import json
 import logging
+import functools
 import os
 import re
 import shutil
@@ -256,6 +257,32 @@ class Store:
         return None, None
 
 
+# --- custom nodes ------------------------------------------------------------
+
+def failed_nodes(paths, loaded):
+    """Custom nodes ComfyUI tried to import (same skips as nodes.init_external_custom_nodes) missing from loaded."""
+    # ponytail: a node that imports but then fails (no NODE_CLASS_MAPPINGS, comfy_entrypoint error)
+    # is already in LOADED_MODULE_DIRS and isn't caught here; comfynkg check reads the log for those.
+    failed = set()
+    for path in paths:
+        try:
+            names = os.listdir(os.path.realpath(path))
+        except OSError:
+            continue
+        for name in names:
+            if name == "__pycache__" or name.endswith(".disabled"):
+                continue
+            key = name
+            if os.path.isfile(os.path.join(path, name)):
+                if not name.endswith(".py"):
+                    continue
+                name = name[:-3]
+                key = os.path.join(path, name)  # ComfyUI keys single-file nodes by their path without .py
+            if key not in loaded:
+                failed.add(name)
+    return sorted(failed)
+
+
 # --- metrics -----------------------------------------------------------------
 
 def _num(value):
@@ -480,6 +507,7 @@ def _safe(fn, *args):
 def install():
     import execution
     import folder_paths
+    import nodes
     from aiohttp import web
     from comfy.cli_args import args
     from server import PromptServer
@@ -498,6 +526,9 @@ def install():
 
     from . import drain as drain_mode
     drain = drain_mode.install(server, config)
+
+    # nodes are all imported before the HTTP server starts and can't change without a restart
+    failed = functools.cache(lambda: failed_nodes(folder_paths.get_folder_paths("custom_nodes"), nodes.LOADED_MODULE_DIRS))
 
     def enabled():
         cfg = config.get()
@@ -564,6 +595,7 @@ def install():
         if not enabled():
             raise web.HTTPNotFound()
         gauges = collector.gauges(queue) + [("comfyui_draining", (), int(drain.active()))]
+        gauges += [("comfyui_custom_node_import_failed", (("node", n),), 1) for n in failed()]
         return web.Response(text=collector.metrics.render(gauges),
                             content_type="text/plain", charset="utf-8")
 

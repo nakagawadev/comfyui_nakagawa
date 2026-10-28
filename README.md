@@ -90,6 +90,8 @@ Saved graphs are in API format, so they can be posted back to `/prompt` to repro
 | `GET /nkg/stats/events/{prompt_id}` | One event |
 | `GET /nkg/stats/events/{prompt_id}/graph` | Its saved graph |
 
+`/nkg/metrics` also lists every custom node that failed to import as `comfyui_custom_node_import_failed{node="..."} 1` (a folder or `.py` in `custom_nodes` that ComfyUI didn't load).
+
 All return 404 while stats are disabled. Each event has the `prompt_id` that `/prompt` returns; send `"extra_data": {"trace_id": "..."}` with `/prompt` to also record your own ID.
 
 These routes have no authentication of their own, like the rest of ComfyUI: they show about what `/history` already shows (prompts, errors and tracebacks), but saved events and graphs outlive a restart. Only enable stats on an instance that is already protected (not exposed publicly, or behind auth). `/nkg/metrics` stays reachable from other hosts on purpose, so Prometheus can scrape it.
