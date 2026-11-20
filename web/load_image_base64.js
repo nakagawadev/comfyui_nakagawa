@@ -26,13 +26,31 @@ app.registerExtension({
         };
         node.addWidget("button", "load image as base64", null, () => file.click(), { serialize: false });
 
+        // Same layout as the native Load Image preview: fixed 220px area, image
+        // contained in it, dimensions label below
+        const box = document.createElement("div");
+        box.style.cssText = "display:flex;flex-direction:column;align-items:center;min-height:220px;";
+        // Absolutely positioned so the image's natural size never stretches the node
+        const frame = document.createElement("div");
+        frame.style.cssText = "position:relative;flex:1;min-height:0;width:100%;";
         const img = document.createElement("img");
-        img.style.cssText = "width:100%;height:100%;object-fit:contain;";
-        node.addDOMWidget("preview", "preview", img, { serialize: false, getMinHeight: () => 150 });
+        img.style.cssText = "position:absolute;inset:0;width:100%;height:100%;object-fit:contain;";
+        frame.append(img);
+        const dims = document.createElement("div");
+        dims.style.cssText = "font-size:12px;padding:4px 0;";
+        img.onload = () => (dims.textContent = `${img.naturalWidth} × ${img.naturalHeight}`);
+        box.append(frame, dims);
+        node.addDOMWidget("preview", "preview", box, { serialize: false, getMinHeight: () => 220 });
+
+        // The multiline textarea forces a 400px min width; size the node like
+        // the native one instead (computeSize + the frontend's default 60px pad)
+        const s = node.computeSize();
+        node.setSize([s[0] + 60, s[1]]);
 
         const update = () => {
             const v = (data.value || "").trim();
-            img.style.visibility = v ? "visible" : "hidden";
+            box.style.visibility = v ? "visible" : "hidden";
+            if (!v) dims.textContent = "";
             // Raw base64 gets a generic prefix; the browser sniffs the real format (png/jpeg/webp)
             if (v) img.src = v.startsWith("data:") ? v : `data:image/png;base64,${v}`;
         };
