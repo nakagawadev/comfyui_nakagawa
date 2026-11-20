@@ -47,7 +47,10 @@ class SaveVideoWebsocket:
     CATEGORY = "api/video"
 
     def save_video(self, video, format, codec):
-        # Get actual format extension
+        # Resolve "auto" like the native SaveVideo: with an explicit container,
+        # save_to re-encodes streams it can't copy (e.g. VP8 from a webm into mp4)
+        if format == "auto":
+            format = "webm" if codec == "av1" else "mp4"
         format_ext = VideoContainer.get_extension(format)
 
         # Encode through a scratch file, removed right away; the UI preview is
