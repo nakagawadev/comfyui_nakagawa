@@ -1,12 +1,12 @@
 # ComfyUI Nakagawa
 
-A collection of custom nodes for ComfyUI aimed at API usage: send video data through websockets instead of saving to disk, and load images from base64.
+A collection of custom nodes for ComfyUI aimed at API usage: send video data through websockets instead of saving to disk, and load images and audio from base64.
 
 ## Installation
 
 1. Clone this repository into your `ComfyUI/custom_nodes` directory
 2. Restart ComfyUI
-3. The nodes will appear in the `api/video` and `api/image` categories
+3. The nodes will appear in the `api/video`, `api/image` and `api/audio` categories
 
 ## Nodes
 
@@ -58,6 +58,21 @@ Loads an image from a base64 string, so API clients can send images inline inste
 - Live preview of the image below the textarea, client-side only (nothing is uploaded or saved)
 - `load image as base64` button to pick an image file and fill the textarea with it
 - Preview and button are not serialized, so an API export only contains `data`
+
+### Load Audio (Base64)
+
+Loads audio from a base64 string, so API clients can send short clips inline. Node ID: `LoadAudioBase64Nak`. Same output as ComfyUI's `Load Audio`, so it plugs into the same nodes.
+
+**Inputs:**
+- `data` (STRING) - The audio as base64, raw or as a data URI (`data:audio/wav;base64,...`)
+
+**Outputs:**
+- `AUDIO` - Waveform (float32, `[1, channels, samples]`) and sample rate
+
+**Features:**
+- Formats: wav, flac, mp3, aac, ogg, m4a/mp4, webm/mkv. The container is detected from the file's first bytes and passed to ffmpeg explicitly, so playlists (HLS, concat) that would make ffmpeg open other URLs or local files are rejected
+- Audio player below the textarea and a `load audio as base64` button, client-side only, like `Load Image (Base64)`
+- Base64 adds ~33% and ComfyUI caps the `/prompt` body (`--max-upload-size`, 100 MB by default), so keep it to short clips
 
 ## Generation stats
 

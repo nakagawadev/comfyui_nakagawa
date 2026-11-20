@@ -11,6 +11,7 @@ import folder_paths
 from fractions import Fraction
 from PIL import Image, ImageOps
 from comfy_api.util import VideoCodec, VideoContainer
+from . import media
 
 
 def _temp_video_path(ext):
@@ -192,7 +193,7 @@ class LoadImageBase64:
     Load an image from a base64 string (raw or data URI).
 
     The UI preview is rendered client-side from the textarea
-    (web/load_image_base64.js), nothing is sent or written to disk.
+    (web/load_base64.js), nothing is sent or written to disk.
     """
 
     @classmethod
@@ -224,17 +225,57 @@ class LoadImageBase64:
         return image, mask.unsqueeze(0)
 
 
+def _decode_audio(raw):
+    """Like ComfyUI's LoadAudio, but from bytes and with the demuxer forced (see media.py)."""
+    with av.open(io.BytesIO(raw), format=media.sniff(raw, media.AUDIO)) as container:
+        if not container.streams.audio:
+            raise ValueError("No audio stream found")
+        stream = container.streams.audio[0]
+        # float32 planar keeps the native [channels, samples] shape at any input sample format
+        resampler = av.AudioResampler(format="fltp")
+        chunks = [f.to_ndarray() for frame in container.decode(stream) for f in resampler.resample(frame)]
+        if not chunks:
+            raise ValueError("No audio frames decoded")
+        return torch.from_numpy(np.concatenate(chunks, axis=1)), stream.codec_context.sample_rate
+
+
+class LoadAudioBase64:
+    """
+    Load audio from a base64 string (raw or data URI): wav, flac, mp3, aac, ogg, m4a/mp4, webm/mkv.
+
+    The UI preview is rendered client-side from the textarea (web/load_base64.js).
+    """
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "data": ("STRING", {"default": "", "multiline": True, "tooltip": "Base64 audio, raw or as a data:audio/...;base64, URI"}),
+            }
+        }
+
+    RETURN_TYPES = ("AUDIO",)
+    FUNCTION = "load_audio"
+    CATEGORY = "api/audio"
+
+    def load_audio(self, data):
+        waveform, sample_rate = _decode_audio(media.b64decode(data))
+        return ({"waveform": waveform.unsqueeze(0), "sample_rate": sample_rate},)
+
+
 # A dictionary that contains all nodes you want to export with their names
 # NOTE: names should be globally unique
 NODE_CLASS_MAPPINGS = {
     "SaveVideoWebsocket": SaveVideoWebsocket,
     "SaveWEBMWebsocket": SaveWEBMWebsocket,
-    "LoadImageBase64Nak": LoadImageBase64
+    "LoadImageBase64Nak": LoadImageBase64,
+    "LoadAudioBase64Nak": LoadAudioBase64,
 }
 
 # A dictionary that contains the friendly/humanly readable titles for the nodes
 NODE_DISPLAY_NAME_MAPPINGS = {
     "SaveVideoWebsocket": "Save Video Websocket",
     "SaveWEBMWebsocket": "Save WEBM Websocket",
-    "LoadImageBase64Nak": "Load Image (Base64)"
+    "LoadImageBase64Nak": "Load Image (Base64)",
+    "LoadAudioBase64Nak": "Load Audio (Base64)",
 }
