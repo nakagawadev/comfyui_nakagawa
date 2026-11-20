@@ -52,10 +52,12 @@ def find_config(extra_model_paths_config, base_path):
 
 
 def resolve_config(raw, port):
-    """Global `stats` (and top-level `drain`) merged with `instances[port]`; the instance wins."""
+    """Global `stats` (and top-level `drain`, `url_loader`, `image`/`audio`/`video`) merged with `instances[port]`; the instance wins."""
     raw = raw or {}
     cfg = {**DEFAULTS, **(raw.get("stats") or {}),
-           "drain": bool(raw.get("drain", False)), "drain_remote": bool(raw.get("drain_remote", False))}
+           "drain": bool(raw.get("drain", False)), "drain_remote": bool(raw.get("drain_remote", False)),
+           "url_loader": raw.get("url_loader") or {},
+           **{kind: raw.get(kind) or {} for kind in ("image", "audio", "video")}}
     cfg.update((raw.get("instances") or {}).get(str(port)) or {})
     if cfg["save_graph"] is False:  # YAML 1.1 reads a bare `off` as false
         cfg["save_graph"] = "off"
