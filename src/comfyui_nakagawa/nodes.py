@@ -300,7 +300,7 @@ def _fetch(url, kind):
     return media.fetch(url, media.url_policy(_config().get()), kind)
 
 
-_URL_INPUT = {"required": {"url": ("STRING", {"default": "", "tooltip": "https URL; the host must be in url_loader.allowed_hosts (comfyui_nakagawa.yaml)"})}}
+_URL_INPUT = {"required": {"url": ("STRING", {"default": "", "tooltip": "https URL; any public host unless url_loader.allowed_hosts (comfyui_nakagawa.yaml) restricts it"})}}
 
 
 class LoadImageURL:
