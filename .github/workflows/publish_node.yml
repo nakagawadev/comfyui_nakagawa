@@ -9,6 +9,7 @@ on:
 
 permissions:
   issues: write
+  contents: write  # tag + GitHub release after publishing
 
 jobs:
   publish-node:
@@ -21,3 +22,14 @@ jobs:
         uses: Comfy-Org/publish-node-action@d2366e7abb6ab16f3bb03e3520ae25c8cf749bc9 # main, 2026-10-27
         with:
           personal_access_token: ${{ secrets.REGISTRY_ACCESS_TOKEN }}
+      # Runs only when the registry publish succeeded; a version already released is skipped
+      - name: 🏷️ Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
+          if gh release view "v$version" >/dev/null 2>&1; then
+            echo "v$version is already released"
+          else
+            gh release create "v$version" --target "$GITHUB_SHA" --title "v$version" --generate-notes
+          fi
