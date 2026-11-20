@@ -38,7 +38,8 @@ Documentation = "https://github.com/nakagawadev/comfyui_nakagawa/wiki"
 [tool.comfy]
 PublisherId = "nakagawadev"
 DisplayName = "comfyui_nakagawa"
-Icon = ""
+Icon = "https://raw.githubusercontent.com/nakagawadev/comfyui_nakagawa/main/assets/icon.png"
+Banner = "https://raw.githubusercontent.com/nakagawadev/comfyui_nakagawa/main/assets/banner.png"
 Tags = []
 Repository = "https://github.com/nakagawadev/comfyui_nakagawa"
 

@@ -1,3 +1,5 @@
+![comfyui_nakagawa](assets/banner.png)
+
 # ComfyUI Nakagawa
 
 ComfyUI is built for someone sitting at its interface. If your product uses it as a backend through its API, these nodes cover what's missing: receive media by URL or base64 without uploading files, return video over websocket without touching disk, and monitor and restart the server without losing jobs.
