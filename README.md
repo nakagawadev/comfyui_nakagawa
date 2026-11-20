@@ -145,9 +145,7 @@ The video nodes work exactly like their native ComfyUI counterparts (`SaveVideo`
 
 ### UI preview
 
-When a workflow runs from the ComfyUI UI, both video nodes also write the video to ComfyUI's `temp` directory (wiped on startup) and return it as a UI output, so the video plays inside the node. The websocket message is sent either way.
-
-UI runs are detected through the `extra_pnginfo` hidden input: the ComfyUI frontend sends the workflow there, API clients usually don't. When it is missing (API runs), nothing is kept on disk and the node returns no UI output. An API client that does send `extra_pnginfo` with a `workflow` is treated as a UI run.
+When a workflow runs from the ComfyUI UI, `web/video_websocket_preview.js` picks up the same websocket message (type 100) and plays the video inside the node from those bytes, the way `SaveImageWebsocket` previews images. Nothing is kept on disk: `Save Video Websocket` encodes through a scratch file in ComfyUI's `temp` directory (needed for MP4 faststart) and deletes it right away, and `Save WEBM Websocket` encodes in memory. The preview is gone on page reload, and the frontend logs `Unknown binary websocket message of type 100` on each run, which is harmless.
 
 ## Technical Details
 

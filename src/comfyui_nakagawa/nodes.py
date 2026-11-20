@@ -14,20 +14,10 @@ from comfy_api.util import VideoCodec, VideoContainer
 
 
 def _temp_video_path(ext):
-    """Path in ComfyUI's temp dir (wiped on startup) so the UI can preview it."""
+    """Scratch file in ComfyUI's temp dir: save_to needs a real path for MP4 faststart."""
     temp_dir = folder_paths.get_temp_directory()
     os.makedirs(temp_dir, exist_ok=True)
-    filename = f"ws_preview_{uuid.uuid4().hex}.{ext}"
-    return filename, os.path.join(temp_dir, filename)
-
-
-def _from_ui(extra_pnginfo):
-    """The ComfyUI frontend sends the workflow in extra_pnginfo; API clients usually don't."""
-    return bool(extra_pnginfo and "workflow" in extra_pnginfo)
-
-
-def _ui_preview(filename):
-    return {"ui": {"images": [{"filename": filename, "subfolder": "", "type": "temp"}], "animated": (True,)}}
+    return os.path.join(temp_dir, f"ws_video_{uuid.uuid4().hex}.{ext}")
 
 
 class SaveVideoWebsocket:
@@ -46,8 +36,7 @@ class SaveVideoWebsocket:
                 "video": ("VIDEO", {"tooltip": "The video to send through websocket"}),
                 "format": (VideoContainer.as_input(), {"default": "auto", "tooltip": "The format to save the video as"}),
                 "codec": (VideoCodec.as_input(), {"default": "auto", "tooltip": "The codec to use for the video"})
-            },
-            "hidden": {"extra_pnginfo": "EXTRA_PNGINFO"}
+            }
         }
 
     RETURN_TYPES = ()
@@ -55,20 +44,20 @@ class SaveVideoWebsocket:
     OUTPUT_NODE = True
     CATEGORY = "api/video"
 
-    def save_video(self, video, format, codec, extra_pnginfo=None):
+    def save_video(self, video, format, codec):
         # Get actual format extension
         format_ext = VideoContainer.get_extension(format)
 
-        # Save to ComfyUI's temp dir; kept only on UI runs so the node can preview it
-        filename, temp_path = _temp_video_path(format_ext)
-        video.save_to(
-            temp_path,
-            format=format,
-            codec=codec
-        )
-
-        with open(temp_path, 'rb') as f:
-            video_data = f.read()
+        # Encode through a scratch file, removed right away; the UI preview is
+        # built client-side from the websocket bytes (web/video_websocket_preview.js)
+        temp_path = _temp_video_path(format_ext)
+        try:
+            video.save_to(temp_path, format=format, codec=codec)
+            with open(temp_path, 'rb') as f:
+                video_data = f.read()
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
 
         # Send video as binary data through custom event
         from server import PromptServer
@@ -88,10 +77,7 @@ class SaveVideoWebsocket:
             VIDEO_EVENT = 100
             PromptServer.instance.send_sync(VIDEO_EVENT, message, sid=PromptServer.instance.client_id)
 
-        if not _from_ui(extra_pnginfo):
-            os.remove(temp_path)
-            return {}
-        return _ui_preview(filename)
+        return {}
 
     @classmethod
     def IS_CHANGED(s, **kwargs):
@@ -124,8 +110,7 @@ class SaveWEBMWebsocket:
                     "step": 1,
                     "tooltip": "Higher crf means lower quality with smaller file size"
                 })
-            },
-            "hidden": {"extra_pnginfo": "EXTRA_PNGINFO"}
+            }
         }
 
     RETURN_TYPES = ()
@@ -133,7 +118,7 @@ class SaveWEBMWebsocket:
     OUTPUT_NODE = True
     CATEGORY = "api/video"
 
-    def save_webm(self, images, codec, fps, crf, extra_pnginfo=None):
+    def save_webm(self, images, codec, fps, crf):
         if images.shape[0] == 0:
             return {}
 
@@ -195,15 +180,7 @@ class SaveWEBMWebsocket:
             VIDEO_EVENT = 100
             PromptServer.instance.send_sync(VIDEO_EVENT, message, sid=PromptServer.instance.client_id)
 
-        if not _from_ui(extra_pnginfo):
-            return {}
-
-        # Write a copy to ComfyUI's temp dir so the UI can preview it
-        filename, temp_path = _temp_video_path("webm")
-        with open(temp_path, "wb") as f:
-            f.write(video_data)
-
-        return _ui_preview(filename)
+        return {}
 
     @classmethod
     def IS_CHANGED(s, **kwargs):
