@@ -1,12 +1,12 @@
 # ComfyUI Nakagawa
 
-A collection of custom nodes for ComfyUI aimed at API usage: send video data through websockets instead of saving to disk, and load images from base64.
+ComfyUI is built for someone sitting at its interface. If your product uses it as a backend through its API, these nodes cover what's missing: receive media by URL or base64 without uploading files, return video over websocket without touching disk, and monitor and restart the server without losing jobs.
 
 ## Installation
 
 1. Clone this repository into your `ComfyUI/custom_nodes` directory
 2. Restart ComfyUI
-3. The nodes will appear in the `api/video` and `api/image` categories
+3. The nodes will appear in the `api/video`, `api/image` and `api/audio` categories
 
 ## Nodes
 
@@ -59,6 +59,84 @@ Loads an image from a base64 string, so API clients can send images inline inste
 - `load image as base64` button to pick an image file and fill the textarea with it
 - Preview and button are not serialized, so an API export only contains `data`
 
+### Load Audio (Base64)
+
+Loads audio from a base64 string, so API clients can send short clips inline. Node ID: `LoadAudioBase64Nak`. Same output as ComfyUI's `Load Audio`, so it plugs into the same nodes.
+
+**Inputs:**
+- `data` (STRING) - The audio as base64, raw or as a data URI (`data:audio/wav;base64,...`)
+
+**Outputs:**
+- `AUDIO` - Waveform (float32, `[1, channels, samples]`) and sample rate
+
+**Features:**
+- Formats: wav, flac, mp3, aac, ogg, m4a/mp4, webm (see [Limits](#limits)). The container is detected from the file's first bytes and passed to ffmpeg explicitly, so playlists (HLS, concat) that would make ffmpeg open other URLs or local files are rejected
+- Audio player below the textarea and a `load audio as base64` button, client-side only, like `Load Image (Base64)`
+- Optional duration limits (`audio.min_s` / `audio.max_s`, see [Limits](#limits))
+
+### Load Image / Video / Audio (URL)
+
+Download the input from a URL instead of sending it inline, for workflows with many or large reference files. Node IDs: `LoadImageURLNak`, `LoadVideoURLNak`, `LoadAudioURLNak`. Outputs match ComfyUI's `Load Image` (`IMAGE`, `MASK`), `Load Video` (`VIDEO`) and `Load Audio` (`AUDIO`).
+
+**Inputs:**
+- `url` (STRING) - An `https://` URL
+
+Each file must also pass the [Limits](#limits) for its kind (formats, duration, resolution, fps).
+
+**Any public https host by default.** The server downloads whatever URL a prompt names; restrict it to your hosts in `comfyui_nakagawa.yaml` (see [Config](#config)):
+
+```yaml
+url_loader:
+  allowed_hosts:              # exact host, or "*.example.com" for its subdomains
+    - cdn.example.com
+    - "*.r2.cloudflarestorage.com"
+  allow_any_public: true      # with no allowed_hosts: true = any public host, false = URL loading off
+  max_mb:                     # download cap per kind; set only the ones to change
+    image: 10
+    audio: 15
+    video: 50
+  timeout_s: 30               # whole download, redirects included
+```
+
+**Security:**
+- Only `https`, redirects included; `http://`, `file://`, `ftp://` and the rest are refused
+- Hosts that resolve to private, loopback, link-local (cloud metadata), CGNAT or reserved addresses are always refused, even when allowed by name
+- The connection goes to the IP that was checked, so DNS can't change between the check and the download (rebinding); HTTPS still verifies the certificate against the hostname
+- Each redirect (up to 2) is checked again
+- Images are parsed only by the Pillow decoders of the allowed formats. Audio and video must start with a known container header (mp4/mov, webm, wav, flac, mp3, aac, ogg), so playlists (HLS, concat) that would make ffmpeg open other URLs or local files are rejected
+- ComfyUI caches node outputs by input, so the same URL is downloaded once until its node changes. Use a new URL (a presigned one, or a `?v=` query) when the file behind it changes
+
+### Limits
+
+Per-file limits for the base64 and URL loaders, in the `image`, `audio` and `video` sections of [`comfyui_nakagawa.yaml`](#config). Set only the keys to change.
+
+Defaults: only the formats below are accepted; duration, resolution and fps are not limited.
+
+```yaml
+image:
+  formats: [png, jpeg, webp, gif, bmp, tiff]
+audio:
+  formats: [wav, flac, mp3, aac, ogg, mp4, webm]
+video:
+  formats: [mp4, webm]        # mp4 covers mov/m4v; .mkv is not accepted
+```
+
+Example with every limit on:
+
+```yaml
+audio:
+  min_s: 2
+  max_s: 15
+video:                        # Load Video (URL); checked from metadata, before decoding frames
+  min_s: 2
+  max_s: 15
+  max_long_side: 1920         # either orientation: 1920x1080 and 1080x1920 both fit
+  max_short_side: 1080
+  max_fps: 30
+```
+
+`formats` can only narrow these lists: a name the nodes can't detect (e.g. `mkv`) is ignored. Limits across all the files of a job (e.g. 15 s of audio and video in total) belong in the API client, which sees the whole job before queueing it.
+
 ## Generation stats
 
 Optional Prometheus metrics and a per-generation JSONL log, meant for debugging (memory, model usage, failures). Off unless a config file exists.
@@ -78,6 +156,8 @@ instances:                  # per-port overrides of any `stats` key
   "8189": { save_graph: all }
   "8190": { enabled: false }
 ```
+
+The same file holds the [`url_loader`](#load-image--video--audio-url) and [`image`/`audio`/`video`](#limits) settings. Stats default to on once the file exists, so a file meant only for those needs `stats: { enabled: false }`.
 
 Saved graphs are in API format, so they can be posted back to `/prompt` to reproduce a failure. Strings over 1 KB (e.g. base64 images) are replaced by their size and hash. Prompt text is only stored inside saved graphs.
 
@@ -145,9 +225,7 @@ The video nodes work exactly like their native ComfyUI counterparts (`SaveVideo`
 
 ### UI preview
 
-When a workflow runs from the ComfyUI UI, both video nodes also write the video to ComfyUI's `temp` directory (wiped on startup) and return it as a UI output, so the video plays inside the node. The websocket message is sent either way.
-
-UI runs are detected through the `extra_pnginfo` hidden input: the ComfyUI frontend sends the workflow there, API clients usually don't. When it is missing (API runs), nothing is kept on disk and the node returns no UI output. An API client that does send `extra_pnginfo` with a `workflow` is treated as a UI run.
+When a workflow runs from the ComfyUI UI, `web/video_websocket_preview.js` picks up the same websocket message (type 100) and plays the video inside the node from those bytes, the way `SaveImageWebsocket` previews images. Nothing is kept on disk: `Save Video Websocket` encodes through a scratch file in ComfyUI's `temp` directory (needed for MP4 faststart) and deletes it right away, and `Save WEBM Websocket` encodes in memory. The preview is gone on page reload, and the frontend logs `Unknown binary websocket message of type 100` on each run, which is harmless.
 
 ## Technical Details
 

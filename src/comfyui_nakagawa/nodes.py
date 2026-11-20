@@ -1,5 +1,5 @@
 import io
-import base64
+import functools
 import av
 import torch
 import numpy as np
@@ -9,25 +9,17 @@ import os
 import uuid
 import folder_paths
 from fractions import Fraction
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, UnidentifiedImageError
 from comfy_api.util import VideoCodec, VideoContainer
+from comfy_api.latest import InputImpl
+from . import media, stats
 
 
 def _temp_video_path(ext):
-    """Path in ComfyUI's temp dir (wiped on startup) so the UI can preview it."""
+    """Scratch file in ComfyUI's temp dir: save_to needs a real path for MP4 faststart."""
     temp_dir = folder_paths.get_temp_directory()
     os.makedirs(temp_dir, exist_ok=True)
-    filename = f"ws_preview_{uuid.uuid4().hex}.{ext}"
-    return filename, os.path.join(temp_dir, filename)
-
-
-def _from_ui(extra_pnginfo):
-    """The ComfyUI frontend sends the workflow in extra_pnginfo; API clients usually don't."""
-    return bool(extra_pnginfo and "workflow" in extra_pnginfo)
-
-
-def _ui_preview(filename):
-    return {"ui": {"images": [{"filename": filename, "subfolder": "", "type": "temp"}], "animated": (True,)}}
+    return os.path.join(temp_dir, f"ws_video_{uuid.uuid4().hex}.{ext}")
 
 
 class SaveVideoWebsocket:
@@ -46,8 +38,7 @@ class SaveVideoWebsocket:
                 "video": ("VIDEO", {"tooltip": "The video to send through websocket"}),
                 "format": (VideoContainer.as_input(), {"default": "auto", "tooltip": "The format to save the video as"}),
                 "codec": (VideoCodec.as_input(), {"default": "auto", "tooltip": "The codec to use for the video"})
-            },
-            "hidden": {"extra_pnginfo": "EXTRA_PNGINFO"}
+            }
         }
 
     RETURN_TYPES = ()
@@ -55,20 +46,23 @@ class SaveVideoWebsocket:
     OUTPUT_NODE = True
     CATEGORY = "api/video"
 
-    def save_video(self, video, format, codec, extra_pnginfo=None):
-        # Get actual format extension
+    def save_video(self, video, format, codec):
+        # Resolve "auto" like the native SaveVideo: with an explicit container,
+        # save_to re-encodes streams it can't copy (e.g. VP8 from a webm into mp4)
+        if format == "auto":
+            format = "webm" if codec == "av1" else "mp4"
         format_ext = VideoContainer.get_extension(format)
 
-        # Save to ComfyUI's temp dir; kept only on UI runs so the node can preview it
-        filename, temp_path = _temp_video_path(format_ext)
-        video.save_to(
-            temp_path,
-            format=format,
-            codec=codec
-        )
-
-        with open(temp_path, 'rb') as f:
-            video_data = f.read()
+        # Encode through a scratch file, removed right away; the UI preview is
+        # built client-side from the websocket bytes (web/video_websocket_preview.js)
+        temp_path = _temp_video_path(format_ext)
+        try:
+            video.save_to(temp_path, format=format, codec=codec)
+            with open(temp_path, 'rb') as f:
+                video_data = f.read()
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
 
         # Send video as binary data through custom event
         from server import PromptServer
@@ -88,10 +82,7 @@ class SaveVideoWebsocket:
             VIDEO_EVENT = 100
             PromptServer.instance.send_sync(VIDEO_EVENT, message, sid=PromptServer.instance.client_id)
 
-        if not _from_ui(extra_pnginfo):
-            os.remove(temp_path)
-            return {}
-        return _ui_preview(filename)
+        return {}
 
     @classmethod
     def IS_CHANGED(s, **kwargs):
@@ -124,8 +115,7 @@ class SaveWEBMWebsocket:
                     "step": 1,
                     "tooltip": "Higher crf means lower quality with smaller file size"
                 })
-            },
-            "hidden": {"extra_pnginfo": "EXTRA_PNGINFO"}
+            }
         }
 
     RETURN_TYPES = ()
@@ -133,7 +123,7 @@ class SaveWEBMWebsocket:
     OUTPUT_NODE = True
     CATEGORY = "api/video"
 
-    def save_webm(self, images, codec, fps, crf, extra_pnginfo=None):
+    def save_webm(self, images, codec, fps, crf):
         if images.shape[0] == 0:
             return {}
 
@@ -195,19 +185,41 @@ class SaveWEBMWebsocket:
             VIDEO_EVENT = 100
             PromptServer.instance.send_sync(VIDEO_EVENT, message, sid=PromptServer.instance.client_id)
 
-        if not _from_ui(extra_pnginfo):
-            return {}
-
-        # Write a copy to ComfyUI's temp dir so the UI can preview it
-        filename, temp_path = _temp_video_path("webm")
-        with open(temp_path, "wb") as f:
-            f.write(video_data)
-
-        return _ui_preview(filename)
+        return {}
 
     @classmethod
     def IS_CHANGED(s, **kwargs):
         return time.time()
+
+
+def _limits(kind):
+    """Per-file limits for `kind` from comfyui_nakagawa.yaml (media.LIMITS by default)."""
+    return media.limits(_config().get(), kind)
+
+
+def _decode_image(raw):
+    """IMAGE and MASK like ComfyUI's LoadImage (first frame, EXIF rotation, alpha as mask).
+
+    Pillow only gets the configured formats: the rarer decoders are the riskier ones.
+    """
+    formats = _limits(media.IMAGE)["formats"]
+    Image.init()  # registers every plugin; open(formats=...) only knows PNG/JPEG/GIF/BMP/PPM before it
+    try:
+        img = Image.open(io.BytesIO(raw), formats=[n for f in formats for n in media.PIL_FORMATS.get(f, [])])
+    except UnidentifiedImageError:
+        raise ValueError(f"Unsupported image format (allowed: {', '.join(formats)})") from None
+    img = ImageOps.exif_transpose(img)
+
+    rgb = img.convert("RGB")
+    image = torch.from_numpy(np.array(rgb).astype(np.float32) / 255.0)[None,]
+
+    # mask = alpha, ones when there is no alpha
+    if "A" in img.getbands():
+        mask = torch.from_numpy(np.array(img.getchannel("A")).astype(np.float32) / 255.0)
+    else:
+        mask = torch.ones((rgb.height, rgb.width), dtype=torch.float32)
+
+    return image, mask.unsqueeze(0)
 
 
 class LoadImageBase64:
@@ -215,7 +227,7 @@ class LoadImageBase64:
     Load an image from a base64 string (raw or data URI).
 
     The UI preview is rendered client-side from the textarea
-    (web/load_image_base64.js), nothing is sent or written to disk.
+    (web/load_base64.js), nothing is sent or written to disk.
     """
 
     @classmethod
@@ -231,20 +243,117 @@ class LoadImageBase64:
     CATEGORY = "api/image"
 
     def load_image(self, data):
-        # Accept data URIs too: strip everything up to the comma
-        img = Image.open(io.BytesIO(base64.b64decode(data.split(",", 1)[-1])))
-        img = ImageOps.exif_transpose(img)
+        return _decode_image(media.b64decode(data))
 
-        rgb = img.convert("RGB")
-        image = torch.from_numpy(np.array(rgb).astype(np.float32) / 255.0)[None,]
 
-        # mask = alpha, ones when there is no alpha
-        if "A" in img.getbands():
-            mask = torch.from_numpy(np.array(img.getchannel("A")).astype(np.float32) / 255.0)
-        else:
-            mask = torch.ones((rgb.height, rgb.width), dtype=torch.float32)
+def _decode_audio(raw):
+    """Like ComfyUI's LoadAudio, but from bytes and with the demuxer forced (see media.py)."""
+    with av.open(io.BytesIO(raw), format=media.sniff(raw, media.AUDIO, _limits(media.AUDIO)["formats"])) as container:
+        if not container.streams.audio:
+            raise ValueError("No audio stream found")
+        stream = container.streams.audio[0]
+        # float32 planar keeps the native [channels, samples] shape at any input sample format
+        resampler = av.AudioResampler(format="fltp")
+        chunks = [f.to_ndarray() for frame in container.decode(stream) for f in resampler.resample(frame)]
+        if not chunks:
+            raise ValueError("No audio frames decoded")
+        return torch.from_numpy(np.concatenate(chunks, axis=1)), stream.codec_context.sample_rate
 
-        return image, mask.unsqueeze(0)
+
+def _audio_output(waveform, sample_rate):
+    """AUDIO dict, after checking the per-file duration limit (media.py)."""
+    media.check_audio(waveform.shape[-1] / sample_rate, _limits(media.AUDIO))
+    return ({"waveform": waveform.unsqueeze(0), "sample_rate": sample_rate},)
+
+
+class LoadAudioBase64:
+    """
+    Load 2-15s of audio from a base64 string (raw or data URI): wav, flac, mp3, aac, ogg, m4a/mp4, webm.
+
+    The UI preview is rendered client-side from the textarea (web/load_base64.js).
+    """
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "data": ("STRING", {"default": "", "multiline": True, "tooltip": "Base64 audio, raw or as a data:audio/...;base64, URI"}),
+            }
+        }
+
+    RETURN_TYPES = ("AUDIO",)
+    FUNCTION = "load_audio"
+    CATEGORY = "api/audio"
+
+    def load_audio(self, data):
+        return _audio_output(*_decode_audio(media.b64decode(data)))
+
+
+@functools.cache
+def _config():
+    from comfy.cli_args import args
+    return stats.Config(stats.find_config(args.extra_model_paths_config, folder_paths.base_path), args.port)
+
+
+def _fetch(url, kind):
+    """Download url under the url_loader policy in comfyui_nakagawa.yaml (re-read when it changes)."""
+    return media.fetch(url, media.url_policy(_config().get()), kind)
+
+
+_URL_INPUT = {"required": {"url": ("STRING", {"default": "", "tooltip": "https URL; any public host unless url_loader.allowed_hosts (comfyui_nakagawa.yaml) restricts it"})}}
+
+
+class LoadImageURL:
+    """Load an image from a URL. Same outputs as Load Image."""
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return _URL_INPUT
+
+    RETURN_TYPES = ("IMAGE", "MASK")
+    FUNCTION = "load"
+    CATEGORY = "api/image"
+
+    def load(self, url):
+        return _decode_image(_fetch(url, media.IMAGE))
+
+
+class LoadVideoURL:
+    """Load a video (mp4/mov/m4v, webm) from a URL. Same output as Load Video."""
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return _URL_INPUT
+
+    RETURN_TYPES = ("VIDEO",)
+    FUNCTION = "load"
+    CATEGORY = "api/video"
+
+    def load(self, url):
+        raw = _fetch(url, media.VIDEO)
+        lim = _limits(media.VIDEO)
+        # Checking the magic bytes is enough here: VideoFromFile lets ffmpeg probe,
+        # and a file starting with an mp4/webm header can't be probed as a playlist
+        media.sniff(raw, media.VIDEO, lim["formats"])
+        video = InputImpl.VideoFromFile(io.BytesIO(raw))
+        # From container metadata, before any frame is decoded into RAM
+        media.check_video(*video.get_dimensions(), float(video.get_frame_rate()), video.get_duration(), lim)
+        return (video,)
+
+
+class LoadAudioURL:
+    """Load audio from a URL. Same output as Load Audio."""
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return _URL_INPUT
+
+    RETURN_TYPES = ("AUDIO",)
+    FUNCTION = "load"
+    CATEGORY = "api/audio"
+
+    def load(self, url):
+        return _audio_output(*_decode_audio(_fetch(url, media.AUDIO)))
 
 
 # A dictionary that contains all nodes you want to export with their names
@@ -252,12 +361,20 @@ class LoadImageBase64:
 NODE_CLASS_MAPPINGS = {
     "SaveVideoWebsocket": SaveVideoWebsocket,
     "SaveWEBMWebsocket": SaveWEBMWebsocket,
-    "LoadImageBase64Nak": LoadImageBase64
+    "LoadImageBase64Nak": LoadImageBase64,
+    "LoadAudioBase64Nak": LoadAudioBase64,
+    "LoadImageURLNak": LoadImageURL,
+    "LoadVideoURLNak": LoadVideoURL,
+    "LoadAudioURLNak": LoadAudioURL,
 }
 
 # A dictionary that contains the friendly/humanly readable titles for the nodes
 NODE_DISPLAY_NAME_MAPPINGS = {
     "SaveVideoWebsocket": "Save Video Websocket",
     "SaveWEBMWebsocket": "Save WEBM Websocket",
-    "LoadImageBase64Nak": "Load Image (Base64)"
+    "LoadImageBase64Nak": "Load Image (Base64)",
+    "LoadAudioBase64Nak": "Load Audio (Base64)",
+    "LoadImageURLNak": "Load Image (URL)",
+    "LoadVideoURLNak": "Load Video (URL)",
+    "LoadAudioURLNak": "Load Audio (URL)",
 }
